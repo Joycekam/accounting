@@ -1,143 +1,111 @@
 import pandas as pd
 
 class AnalysisEngine:
+    """
+    Moteur d'analyse financière chargé de calculer les indicateurs clés (KPI),
+    les répartitions de flux par compte et la détection des opérations atypiques.
+    """
 
     def __init__(self, df, schema):
+        """
+        Initialise le moteur avec le jeu de données nettoyé et son schéma de colonnes.
+        """
         self.df = df
         self.schema = schema
 
     def compute_kpis(self):
-
+        """
+        Exécute la chaîne globale de calculs financiers.
+        
+        Retourne:
+            dict: Regroupement des KPI globaux, des top comptes et des anomalies.
+        """
         results = {}
 
         amount = self.schema.get("amount")
         date = self.schema.get("date")
-        account = self.schema.get("main_account")
+        debit_account = self.schema.get("debit_account")
+        credit_account = self.schema.get("credit_account")
         beneficiary = self.schema.get("beneficiary")
 
         # =====================================================
-        # 1. KPI GLOBAUX
+        # INDICATEURS GLOBAUX
         # =====================================================
-
         if amount:
-
             results["total_amount"] = self.df[amount].sum()
-
             results["avg_amount"] = self.df[amount].mean()
-
             results["count"] = self.df.shape[0]
 
         # =====================================================
-        # 2. ANALYSE PAR COMPTE
+        # ANALYSE ALGORITHMIQUE DES FLUX (TOP 10 & CONTRIBUTIONS)
         # =====================================================
-
-        if amount and account:
-
-            group = (
-                self.df.groupby(account)[amount]
+        if amount and debit_account:
+            group_debit = (
+                self.df.groupby(debit_account)[amount]
                 .sum()
                 .sort_values(ascending=False)
             )
+            results["top_debit_accounts"] = group_debit.head(10)
+            results["debit_contribution"] = (group_debit / group_debit.sum() * 100).head(10)
 
-            results["top_accounts"] = group.head(10)
-
-            results["account_contribution"] = (
-                group / group.sum() * 100
-            ).head(10)
+        if amount and credit_account:
+            group_credit = (
+                self.df.groupby(credit_account)[amount]
+                .sum()
+                .sort_values(ascending=False)
+            )
+            results["top_credit_accounts"] = group_credit.head(10)
+            results["credit_contribution"] = (group_credit / group_credit.sum() * 100).head(10)
 
         # =====================================================
-        # 3. ANALYSE TEMPORELLE (VERSION ROBUSTE)
+        # ANALYSE DE LA TENDANCE TEMPORELLE
         # =====================================================
-
         if amount and date:
-
             df_temp = self.df.copy()
 
-            # -----------------------------
-            # Conversion multi-formats
-            # -----------------------------
-            date_formats = [
-                "%Y%m%d",
-                "%d/%m/%Y",
-                "%Y-%m-%d",
-                "%d-%m-%Y"
-            ]
+            if not pd.api.types.is_datetime64_any_dtype(df_temp[date]):
+                s = df_temp[date].astype(str).str.replace(r'\.0$', '', regex=True).str.strip()
+                df_temp[date] = pd.to_datetime(s, format="%Y%m%d", errors="coerce")
 
-            converted = None
+            df_temp = df_temp.dropna(subset=[date])
 
-            for fmt in date_formats:
-
-                temp_dates = pd.to_datetime(
-                    df_temp[date].astype(str),
-                    format=fmt,
-                    errors="coerce"
+            if not df_temp.empty:
+                df_temp["month"] = (
+                    df_temp[date]
+                    .dt.to_period("M")
+                    .dt.to_timestamp()
                 )
-
-                valid_ratio = temp_dates.notna().mean()
-
-                if valid_ratio > 0.7:
-                    converted = temp_dates
-                    break
-
-            # -----------------------------
-            # Si conversion réussie
-            # -----------------------------
-            if converted is not None:
-
-                df_temp[date] = converted
-
-                df_temp = df_temp.dropna(subset=[date])
-
-                if not df_temp.empty:
-
-                    # MODIFICATION : On ajoute .dt.to_timestamp() pour rendre 
-                    # l'objet compatible avec la sérialisation JSON de Plotly
-                    df_temp["month"] = (
-                        df_temp[date]
-                        .dt.to_period("M")
-                        .dt.to_timestamp()
-                    )
-
-                    monthly = (
-                        df_temp.groupby("month")[amount]
-                        .sum()
-                    )
-
-                    results["monthly_trend"] = monthly
+                results["monthly_trend"] = df_temp.groupby("month")[amount].sum()
 
         # =====================================================
-        # 4. ANALYSE BENEFICIAIRES
+        # ANALYSE DES TIERS / BÉNÉFICIAIRES
         # =====================================================
-
         if amount and beneficiary:
-
-            top_benef = (
+            results["top_beneficiaries"] = (
                 self.df.groupby(beneficiary)[amount]
                 .sum()
                 .sort_values(ascending=False)
                 .head(10)
             )
 
-            results["top_beneficiaries"] = top_benef
-
         # =====================================================
-        # 5. DETECTION ANOMALIES
+        # CALCUL DU SEUIL D'ANOMALIE (MÉTHODE HYBRIDE STAT/MÉTIER)
         # =====================================================
-
         if amount:
-
             q1 = self.df[amount].quantile(0.25)
-
             q3 = self.df[amount].quantile(0.75)
-
             iqr = q3 - q1
-
-            upper_bound = q3 + 1.5 * iqr
-
-            anomalies = self.df[
-                self.df[amount] > upper_bound
-            ]
-
-            results["anomalies"] = anomalies.head(10)
+            
+            # Seuil statistique strict pour les valeurs extrêmes (Modèle IQR x 3)
+            plafond_stat = q3 + 3 * iqr
+            
+            # Paramétrage initial de la matérialité à 0.5% du volume global annuel
+            plafond_metier = self.df[amount].sum() * 0.005  
+            
+            # Arbitrage par le principe de prudence : sélection du filtre le plus restrictif
+            upper_bound = max(plafond_stat, plafond_metier)
+            
+            anomalies = self.df[self.df[amount] > upper_bound]
+            results["anomalies"] = anomalies.sort_values(by=amount, ascending=False)
 
         return results
