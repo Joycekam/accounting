@@ -1,4 +1,3 @@
-import os
 import streamlit as st
 import pandas as pd
 import plotly.express as px
@@ -37,13 +36,10 @@ L’outil :
 """)
 
 # =========================================================
-# SUBSISTÈME DE PERSISTANCE DES DONNÉES EN MÉMOIRE
+# SUBSISTÈME DE PERSISTANCE EN MÉMOIRE (SÉCURISÉ POUR LE CLOUD)
 # =========================================================
-TEMP_FILE = "temp_database.csv"
-
+# Le bouton de réinitialisation vide uniquement la mémoire vive (Session State)
 if st.sidebar.button("Nouvelle Analyse / Réinitialiser", use_container_width=True):
-    if os.path.exists(TEMP_FILE):
-        os.remove(TEMP_FILE)
     st.session_state.clear()
     st.rerun()
 
@@ -53,30 +49,25 @@ separator = st.sidebar.selectbox("Séparateur CSV", [";", ",", "|"], index=0)
 
 uploaded_file = st.file_uploader("Importer un fichier comptable CSV", type=["csv"])
 
+# LECTURE ET SAUVEGARDE EN MÉMOIRE VIVE (Aucune écriture sur le disque)
 if uploaded_file is not None:
-    with open(TEMP_FILE, "wb") as f:
-        f.write(uploaded_file.getbuffer())
-    st.session_state["file_uploaded"] = True
+    # On vérifie si c'est un nouveau fichier pour éviter de recharger inutilement
+    if "current_file_name" not in st.session_state or st.session_state["current_file_name"] != uploaded_file.name:
+        try:
+            # Lecture du fichier directement depuis le buffer mémoire
+            df = pd.read_csv(uploaded_file, sep=separator, low_memory=False, decimal=',')
+            st.session_state["df"] = df
+            st.session_state["current_file_name"] = uploaded_file.name
+            st.success("Fichier chargé et sécurisé en mémoire vive. (Les données disparaîtront à la fermeture de l'onglet).")
+        except Exception as e:
+            st.error(f"Erreur lors du chargement : {e}")
 
 # =========================================================
 # SEQUENCE EXECUTIONNELLE PRINCIPALE (ENGINE PIPELINE)
 # =========================================================
-if os.path.exists(TEMP_FILE):
-
-    @st.cache_data
-    def load_data(file_path, sep):
-        """Charge l'ensemble de la base de données en optimisant la mémoire."""
-        return pd.read_csv(file_path, sep=sep, low_memory=False, decimal=',')
-
-    try:
-        df = load_data(TEMP_FILE, separator)
-        if uploaded_file is not None:
-            st.success("Fichier chargé et sauvegardé avec succès.")
-        else:
-            st.info("Base de données précédente restaurée automatiquement.")
-    except Exception as e:
-        st.error(f"Erreur lors du chargement : {e}")
-        st.stop()
+if "df" in st.session_state:
+    
+    df = st.session_state["df"].copy() # On travaille sur une copie de la mémoire
 
     with st.expander("Aperçu des données", expanded=False):
         st.dataframe(df.head(20), use_container_width=True)
@@ -237,7 +228,7 @@ if os.path.exists(TEMP_FILE):
             st.plotly_chart(fig_trend, use_container_width=True)
 
     # =========================================================
-    # DETECTION ANOMLIES
+    # BLOC DETECTION CRITIQUE : MODULE AUDIT DYNAMIQUE
     # =========================================================
     if "anomalies" in results:
         st.subheader("Anomalies détectées (Basées sur des montants exceptionnels)")
@@ -278,13 +269,13 @@ if os.path.exists(TEMP_FILE):
                 st.success("Aucune opération anormale détectée avec ce niveau de filtrage.")
 
     # =========================================================
-    # EXPORT
+    # DISPOSITIF DE RECONSTRUCTION ET EXPORTATION CSV
     # =========================================================
-    #st.subheader("Export")
-    #csv_export = df_clean.to_csv(index=False).encode("utf-8")
-    #st.download_button(
-    #    label="Télécharger les données nettoyées", data=csv_export, file_name="cleaned_data.csv", mime="text/csv"
-    #)
+    st.subheader("Export")
+    csv_export = df_clean.to_csv(index=False).encode("utf-8")
+    st.download_button(
+        label="Télécharger les données nettoyées", data=csv_export, file_name="cleaned_data.csv", mime="text/csv"
+    )
 
 else:
     st.info("Veuillez importer un fichier CSV pour commencer.")
